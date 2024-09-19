@@ -1,14 +1,10 @@
 const axios = require('axios');
 const chalk = require('chalk')
+require('dotenv').config()
 
-// ---------------------- MODIFY HERE ----------------------
-// Replace these with your GitLab instance URL and access token
-const GITLAB_URL = 'TODO ADD HERE';
-const ACCESS_TOKEN = 'TODO ADD HERE';
-const USER_EMAIL = 'TODO ADD HERE';
-const TOKEN = 'TODO ADD HERE'; // Create a token at https://id.atlassian.com/manage-profile/security/api-tokens
-const TENANT_SUBDOMAIN = 'TODO ADD HERE'; // Add your subdomain here - find it from the url - e.g. https://<southwest>.atlassian.net
-const CLOUD_ID = 'TODO ADD HERE'; // The UUID for your cloud site. This can be found in ARIs - look at the first uuid ari:cloud:compass:{cloud-uuid}
+
+const {GITLAB_URL, ACCESS_TOKEN, USER_EMAIL, TOKEN, TENANT_SUBDOMAIN, CLOUD_ID} = process.env
+const dryRun = process.env.DRY_RUN === "1"
 
 const ATLASSIAN_GRAPHQL_URL = `https://${TENANT_SUBDOMAIN}.atlassian.net/gateway/api/graphql`;
 
@@ -25,11 +21,8 @@ function makeGqlRequest(query) {
     }).then((res) => res.json());
 }
 
-
 // This function looks for a component with a certain name, but if it can't find it, it will create a component.
-// Alternatively you could manually create the component and then add it to each OpenAPI spec (and read the id from the spec)
-async function getComponentAri(componentName) {
-    console.log(`Searching for component with name ${componentName}`);
+async function putComponent(componentName, description, web_url, readme) {
     const response = await makeGqlRequest({
         query: `
       query getComponent {
@@ -52,6 +45,7 @@ async function getComponentAri(componentName) {
       `,
     });
     const maybeResults = response?.data?.compass?.searchComponents?.nodes;
+
     if (!Array.isArray(maybeResults)) {
         console.error(`error fetching component: `, JSON.stringify(response));
         throw new Error('Error fetching component');
@@ -61,14 +55,18 @@ async function getComponentAri(componentName) {
         (r) => r.component?.name === componentName
     )?.component?.id;
     if (maybeComponentAri) {
-        console.log(`found component ${maybeComponentAri}`);
+        console.log(chalk.gray(`Already added ${web_url} ... skipping`))
         return maybeComponentAri;
     } else {
-        const response = await makeGqlRequest({
-            query: `
+        if (!dryRun) {
+
+
+            const readmeLink = readme ? `, {type: DOCUMENT, name: "ReadMe", url: "${readme}"}` : ''
+            const response = await makeGqlRequest({
+                query: `
         mutation createComponent {
           compass @optIn(to: "compass-beta") {
-            createComponent(cloudId: "${CLOUD_ID}", input: {name: "${componentName}", typeId: "SERVICE"}) {
+            createComponent(cloudId: "${CLOUD_ID}", input: {name: "${componentName}", description: "${description}" typeId: "OTHER", links: [{type: REPOSITORY, name: "Repository", url: "${web_url}"}${readmeLink}]}) {
               success
               componentDetails {
                 id
@@ -76,16 +74,21 @@ async function getComponentAri(componentName) {
             }
           }
         }`,
-        });
-        const maybeAri =
-            response?.data.compass?.createComponent?.componentDetails?.id;
-        const isSuccess = !!response?.data.compass?.createComponent?.success;
-        if (!isSuccess || !maybeAri) {
-            console.error(`error creating component: `, JSON.stringify(response));
-            throw new Error('Could not create component');
+            });
+
+            const maybeAri =
+                response?.data.compass?.createComponent?.componentDetails?.id;
+            const isSuccess = !!response?.data.compass?.createComponent?.success;
+            if (!isSuccess || !maybeAri) {
+                console.error(`error creating component: `, JSON.stringify(response));
+                throw new Error('Could not create component');
+            }
+            console.log(chalk.green(`New component for ${web_url} ... added ${componentName}`))
+            return maybeAri;
+        } else {
+            console.log(chalk.yellow(`New component for ${web_url} ... would be added ${componentName} (dry-run)`))
+            return;
         }
-        console.log(`successfully created component ${maybeAri}`);
-        return maybeAri;
     }
 }
 
@@ -102,6 +105,8 @@ async function listAllProjects() {
                     per_page: perPage,
                     page: page,
                     simple: true,
+                    // order_by: 'name',
+                    // sort: 'asc'
                 },
                 headers: {
                     'Private-Token': ACCESS_TOKEN,
@@ -109,20 +114,18 @@ async function listAllProjects() {
             });
 
             const projects = response.data;
-
             console.log(`Pulled projects ${instanceProjects} - ${instanceProjects+projects.length}`)
             // Inner loop: Iterate over projects on the current page
             for (const project of projects) {
-                instanceProjects++
-                // instanceProjects.push({
-                //     name: project.name,
-                //     web_url: project.web_url,
-                //     tag_list: project.tag_list
-                // readme_url: if I have time...
-                // })
-                //
-                console.log(project)
-                console.log(project.web_url)
+
+                // need a filter, add one here!
+                /*
+                Example, skip user's 'home' repos
+                if (project.path !== 'home')
+                 */
+                if (true) {
+                    await putComponent(project.path_with_namespace, project.description || '', project.web_url, project.readme_url)
+                }
 
             }
 
